@@ -121,6 +121,28 @@ describe('add_report_comment', () => {
     expect(graphql.calls.map((c) => c.operation)).toContain('GetReportRef');
   });
 
+  it('refuses when report lookup fails despite having read access', async () => {
+    const { graphql, approvals } = api({
+      GetReportRef: () => {
+        throw new Error('simulated lookup failure');
+      },
+    });
+    harness = await connectTools({
+      graphql,
+      grantedScopes: ['reports:write', 'reports:read'],
+      viewerId: 'researcher-1',
+    });
+
+    const result = await harness.call('add_report_comment', {
+      reportId: 'r1',
+      content: 'Test comment',
+    });
+
+    expect(result.isError).toBeTruthy();
+    expect(approvals.created).toHaveLength(0);
+    expect(graphql.calls.filter((call) => call.operation === 'AddReportComment')).toHaveLength(0);
+  });
+
   it('refuses when it could post on either side and cannot read the report to tell which', async () => {
     const { graphql, approvals } = api();
     harness = await connectTools({ graphql, grantedScopes: ['reports:write', 'triage:write'] });

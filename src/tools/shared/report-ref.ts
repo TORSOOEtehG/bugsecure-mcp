@@ -24,6 +24,7 @@ export interface ReportLookup {
 export const lookupReport = async (
   context: Pick<ToolContext, 'granted' | 'signal'>,
   fetch: () => Promise<GetReportRefQuery>,
+  options: { failOnError?: boolean } = {},
 ): Promise<ReportLookup> => {
   if (!context.granted.has('reports:read') && !context.granted.has('triage:read'))
     return { report: undefined };
@@ -32,6 +33,15 @@ export const lookupReport = async (
     return { report: report ?? undefined };
   } catch (error) {
     if (context.signal.aborted) throw error;
+
+    if (options.failOnError) {
+      throw new BugSecureError(
+        'UPSTREAM_ERROR',
+        'Nothing was sent: the report could not be read to check which side it is on.',
+        { hint: 'Try again shortly.', cause: error },
+      );
+    }
+
     return { report: undefined };
   }
 };

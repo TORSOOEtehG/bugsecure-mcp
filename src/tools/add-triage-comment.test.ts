@@ -140,6 +140,29 @@ describe('add_triage_comment', () => {
     expect(approvals.created).toEqual([]);
   });
 
+  it('refuses when report lookup fails despite having triage read access', async () => {
+    const { graphql, approvals } = api(() => posted(true), {
+      GetReportRef: () => {
+        throw new Error('simulated lookup failure');
+      },
+    });
+
+    harness = await connectTools({
+      graphql,
+      grantedScopes: [...TRIAGER, 'triage:read'],
+      viewerId: 'triager-1',
+    });
+
+    const result = await harness.call('add_triage_comment', {
+      reportId: 'r1',
+      content: 'Test internal note',
+    });
+
+    expect(result.isError).toBeTruthy();
+    expect(approvals.created).toHaveLength(0);
+    expect(graphql.calls.filter((call) => call.operation === 'AddTriageComment')).toHaveLength(0);
+  });
+
   it('refuses when it could post on either side and cannot read the report to tell which', async () => {
     const { graphql, approvals } = api(() => posted(true));
     harness = await connectTools({

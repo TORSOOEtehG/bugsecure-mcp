@@ -46,8 +46,10 @@ export const addTriageComment = defineTool({
   output: z.object({ comment: PostedCommentSchema }),
   payload: async (input, context) => {
     await notStaff(context);
-    const { report } = await lookupReport(context, () =>
-      context.graphql.request(GetReportRefDocument, { id: input.reportId }, { signal: context.signal }),
+    const { report } = await lookupReport(
+      context,
+      () => context.graphql.request(GetReportRefDocument, { id: input.reportId }, { signal: context.signal }),
+      { failOnError: true },
     );
     // With reports:write too, the API would post on the user's own report as the researcher.
     requireSideKnown(report, context.granted.has('reports:write'), 'this report');

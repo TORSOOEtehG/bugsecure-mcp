@@ -83,9 +83,16 @@ const fakeApi = (): Server => {
             }
           : operation === 'SearchPrograms'
             ? { programs: [] }
-            : handler === undefined
-              ? null
-              : handler(body.variables ?? {});
+            : operation === 'GetReportRef'
+              ? {
+                  report: {
+                    id: body.variables?.id,
+                    reporter: { id: 'researcher-1' },
+                  },
+                }
+              : handler === undefined
+                ? null
+                : handler(body.variables ?? {});
       res.writeHead(data ? 200 : 400, { 'content-type': 'application/json' });
       res.end(JSON.stringify(data ? { data } : { errors: [{ message: `unexpected ${operation}` }] }));
     });

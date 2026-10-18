@@ -11,39 +11,69 @@ import { assertNotOwnReport, requireViewerWhenAmbiguous } from './report.js';
 export type ReportRef = NonNullable<GetReportRefQuery['report']>;
 
 export interface ReportLookup {
-  /** The report, or undefined when it could not be looked up (not readable, not visible, or failed). */
+  /** The report, or undefined when this connection holds no scope that could read it. */
   readonly report: ReportRef | undefined;
 }
 
 /**
+ * Read the report a write is about, and refuse the write when that cannot be
+ * done: a refusal by the API (session expired, a scope withheld, AI triage
+ * access disabled, rate limit…) is passed on as it is, so the user is told
+ * what to do about it; any other failure becomes UPSTREAM_ERROR; a report the
+ * API answers `null` for is NOT_FOUND. `purpose` says what the read was for,
+ * in the words of the refusal. Nothing is written blind.
+ */
+const readReportRef = async (
+  context: Pick<ToolContext, 'signal'>,
+  fetch: () => Promise<GetReportRefQuery>,
+  purpose: { readonly check: string; readonly findIt: string },
+): Promise<ReportRef> => {
+  let report: GetReportRefQuery['report'];
+  try {
+    ({ report } = await fetch());
+  } catch (error) {
+    if (context.signal.aborted || error instanceof BugSecureError) throw error;
+    throw new BugSecureError(
+      'UPSTREAM_ERROR',
+      `Nothing was sent: the report could not be read to check ${purpose.check}.`,
+      {
+        hint: 'Try again shortly.',
+        cause: error,
+      },
+    );
+  }
+  if (report === null) {
+    throw new BugSecureError(
+      'NOT_FOUND',
+      `Nothing was sent: the report could not be read to check ${purpose.check}. It is not visible to your account.`,
+      { hint: `Check the id with ${purpose.findIt}, then try again.` },
+    );
+  }
+  return report;
+};
+
+/**
  * Look the report up if this connection can read it (reports:read or
- * triage:read). Never throws for a failed lookup: the caller then decides
- * whether it can proceed without knowing whose report it is. `fetch` sends
+ * triage:read), before a comment is posted on it. With a read scope, a lookup
+ * that cannot complete refuses the comment rather than letting it be written
+ * blind (see `readReportRef`): the operator is not asked to approve a comment
+ * the API would refuse, and the real reason is kept. Without any read scope
+ * the report is simply unknown, and the caller decides what it can do without
+ * it: `requireSideKnown` refuses a token that could post on either side, and
+ * on a single side the API checks whose report it is. `fetch` sends
  * GetReportRef from the calling tool's file.
  */
 export const lookupReport = async (
   context: Pick<ToolContext, 'granted' | 'signal'>,
   fetch: () => Promise<GetReportRefQuery>,
-  options: { failOnError?: boolean } = {},
 ): Promise<ReportLookup> => {
   if (!context.granted.has('reports:read') && !context.granted.has('triage:read'))
     return { report: undefined };
-  try {
-    const { report } = await fetch();
-    return { report: report ?? undefined };
-  } catch (error) {
-    if (context.signal.aborted) throw error;
-
-    if (options.failOnError) {
-      throw new BugSecureError(
-        'UPSTREAM_ERROR',
-        'Nothing was sent: the report could not be read to check which side it is on.',
-        { hint: 'Try again shortly.', cause: error },
-      );
-    }
-
-    return { report: undefined };
-  }
+  const report = await readReportRef(context, fetch, {
+    check: 'which side it is on',
+    findIt: 'list_my_reports or list_org_reports',
+  });
+  return { report };
 };
 
 /**
@@ -74,9 +104,9 @@ export const requireSideKnown = (report: ReportRef | undefined, bothSides: boole
  * refuses a member acting on their own report anyway; this keeps the client
  * from asking for, or sending, a write whose side it could not check.
  *
- * Unlike `lookupReport`, a refusal by the API (session expired, AI triage
- * access disabled, rate limit…) is passed on as it is, so the user is told
- * what to do about it.
+ * Unlike `lookupReport`, there is no scope under which the report may stay
+ * unknown: these writes need it, so the lookup always runs and a lookup that
+ * cannot complete refuses the write (see `readReportRef`).
  *
  * Called from the tool's payload, which runs before asking AND before sending.
  */
@@ -85,24 +115,10 @@ export const orgSideReport = async (
   fetch: () => Promise<GetReportRefQuery>,
 ): Promise<ReportRef> => {
   requireViewerWhenAmbiguous(context.viewerId, context.granted.has('reports:read'));
-  let report: GetReportRefQuery['report'];
-  try {
-    ({ report } = await fetch());
-  } catch (error) {
-    if (context.signal.aborted || error instanceof BugSecureError) throw error;
-    throw new BugSecureError(
-      'UPSTREAM_ERROR',
-      'Nothing was sent: the report could not be read to check it was submitted to your organisation.',
-      { hint: 'Try again shortly.', cause: error },
-    );
-  }
-  if (report === null) {
-    throw new BugSecureError(
-      'NOT_FOUND',
-      'Nothing was sent: the report could not be read to check it was submitted to your organisation. It is not visible to your account.',
-      { hint: 'Check the id with list_org_reports, then try again.' },
-    );
-  }
+  const report = await readReportRef(context, fetch, {
+    check: 'it was submitted to your organisation',
+    findIt: 'list_org_reports',
+  });
   assertNotOwnReport(report.reporter.id, context.viewerId);
   return report;
 };

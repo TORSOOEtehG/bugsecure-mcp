@@ -26,10 +26,8 @@ export const addReportComment = defineTool({
   }),
   output: z.object({ comment: PostedCommentSchema }),
   payload: async (input, context) => {
-    const { report } = await lookupReport(
-      context,
-      () => context.graphql.request(GetReportRefDocument, { id: input.reportId }, { signal: context.signal }),
-      { failOnError: true },
+    const { report } = await lookupReport(context, () =>
+      context.graphql.request(GetReportRefDocument, { id: input.reportId }, { signal: context.signal }),
     );
     // With triage:write too, the API would post on an organisation's report as the organisation.
     requireSideKnown(report, context.granted.has('triage:write'), 'this report');

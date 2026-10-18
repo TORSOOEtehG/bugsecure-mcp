@@ -121,10 +121,13 @@ describe('add_report_comment', () => {
     expect(graphql.calls.map((c) => c.operation)).toContain('GetReportRef');
   });
 
-  it('refuses when report lookup fails despite having read access', async () => {
+  it('passes the API’s own refusal of the lookup on, so the user is told what to do', async () => {
+    // With a read scope the report is read before anything is asked. An
+    // expired session (or a withheld scope, a rate limit) is the user's to act
+    // on: it must reach them as it is, not as "try again".
     const { graphql, approvals } = api({
       GetReportRef: () => {
-        throw new Error('simulated lookup failure');
+        throw new BugSecureError('SESSION_EXPIRED', 'Your session expired.', { hint: 'Run login again.' });
       },
     });
     harness = await connectTools({
@@ -133,14 +136,81 @@ describe('add_report_comment', () => {
       viewerId: 'researcher-1',
     });
 
-    const result = await harness.call('add_report_comment', {
-      reportId: 'r1',
-      content: 'Test comment',
+    const result = await harness.call('add_report_comment', { reportId: 'r1', content: 'Test comment' });
+
+    expect(result.isError).toBe(true);
+    expect(textOf(result)).toContain('Your session expired.');
+    expect(textOf(result)).toContain('Run login again.');
+    expect(textOf(result)).not.toContain('Try again shortly');
+    expect(approvals.created).toEqual([]);
+    expect(withoutLookups(graphql.calls)).toEqual([]);
+  });
+
+  it('refuses, rather than posts blind, when the lookup fails for any other reason', async () => {
+    const { graphql, approvals } = api({
+      GetReportRef: () => {
+        throw new Error('socket hang up');
+      },
+    });
+    harness = await connectTools({
+      graphql,
+      grantedScopes: ['reports:write', 'reports:read'],
+      viewerId: 'researcher-1',
     });
 
-    expect(result.isError).toBeTruthy();
-    expect(approvals.created).toHaveLength(0);
-    expect(graphql.calls.filter((call) => call.operation === 'AddReportComment')).toHaveLength(0);
+    const result = await harness.call('add_report_comment', { reportId: 'r1', content: 'Test comment' });
+
+    expect(result.isError).toBe(true);
+    expect(textOf(result)).toContain('could not be read to check which side it is on');
+    expect(textOf(result)).toContain('Try again shortly');
+    expect(approvals.created).toEqual([]);
+    expect(withoutLookups(graphql.calls)).toEqual([]);
+  });
+
+  it('refuses a report the API answers null for, instead of asking the user to approve a doomed comment', async () => {
+    const { graphql, approvals } = api({ GetReportRef: () => ({ report: null }) });
+    harness = await connectTools({
+      graphql,
+      grantedScopes: ['reports:write', 'reports:read'],
+      viewerId: 'researcher-1',
+    });
+
+    const result = await harness.call('add_report_comment', { reportId: 'r1', content: 'Test comment' });
+
+    expect(result.isError).toBe(true);
+    expect(textOf(result)).toContain('not visible to your account');
+    expect(approvals.created).toEqual([]);
+    expect(withoutLookups(graphql.calls)).toEqual([]);
+  });
+
+  it('sends nothing when the lookup succeeded before asking but fails before sending', async () => {
+    // The payload is built twice: before the user is asked, and again once
+    // they approved, so that what is sent is checked against the report as it
+    // is NOW. A lookup that fails on the second pass refuses the send, even
+    // though the approval exists; the comment was never written.
+    let lookups = 0;
+    const { graphql, approvals } = api({
+      GetReportRef: () => {
+        lookups += 1;
+        if (lookups === 1) return { report: { id: 'r1', reporter: { id: 'researcher-1' } } };
+        throw new BugSecureError('SESSION_EXPIRED', 'Your session expired.', { hint: 'Run login again.' });
+      },
+    });
+    harness = await connectTools({
+      graphql,
+      grantedScopes: ['reports:write', 'reports:read'],
+      viewerId: 'researcher-1',
+    });
+
+    const result = await harness.call('add_report_comment', { reportId: 'r1', content: 'Test comment' });
+
+    expect(result.isError).toBe(true);
+    expect(textOf(result)).toContain('Your session expired.');
+    expect(lookups).toBe(2);
+    // The user was asked, and approved: that is not enough to send blind.
+    expect(approvals.created).toHaveLength(1);
+    expect(harness.prompts).toHaveLength(1);
+    expect(withoutLookups(graphql.calls)).toEqual([]);
   });
 
   it('refuses when it could post on either side and cannot read the report to tell which', async () => {

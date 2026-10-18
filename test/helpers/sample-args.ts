@@ -57,13 +57,25 @@ export const ORG_SIDE_WRITE_TOOLS: ReadonlySet<string> = new Set([
 ]);
 
 /**
- * Organisation-side writes that change a report (its status, its grade, who triages it): refused, not
- * asked for, when the report cannot be read to check it is not the caller's own (orgSideReport).
+ * Organisation-side writes that change a report (its status, its grade, who triages it): the report is
+ * always read first, to check it is not the caller's own (orgSideReport), and a caller who cannot be
+ * told from the reporter is refused.
  */
 export const REPORT_CHANGING_ORG_TOOLS: ReadonlySet<string> = new Set([
   'update_report_status',
   'assign_report',
   'grade_report',
+]);
+
+/**
+ * Write tools that read the report they act on before asking for, or sending, the write — always
+ * (REPORT_CHANGING_ORG_TOOLS) or when the token holds their side's read scope (the comment tools,
+ * lookupReport) — and refuse, registering nothing, when that read cannot complete (readReportRef).
+ */
+export const REPORT_READING_WRITE_TOOLS: ReadonlySet<string> = new Set([
+  ...REPORT_CHANGING_ORG_TOOLS,
+  'add_report_comment',
+  'add_triage_comment',
 ]);
 
 /** The mutation each write tool sends. */

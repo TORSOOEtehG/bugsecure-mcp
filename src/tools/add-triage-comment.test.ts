@@ -140,110 +140,6 @@ describe('add_triage_comment', () => {
     expect(approvals.created).toEqual([]);
   });
 
-  it('passes the API’s own refusal of the lookup on, so the user is told what to do', async () => {
-    const { graphql, approvals } = api(() => posted(true), {
-      GetReportRef: () => {
-        throw new BugSecureError(
-          'ORG_AI_ACCESS_DISABLED',
-          'This organisation has not enabled AI triage access.',
-          {
-            hint: 'Ask an Administrator of the organisation to enable it.',
-          },
-        );
-      },
-    });
-    harness = await connectTools({
-      graphql,
-      grantedScopes: [...TRIAGER, 'triage:read'],
-      viewerId: 'triager-1',
-    });
-
-    const result = await harness.call('add_triage_comment', {
-      reportId: 'r1',
-      content: 'Test internal note',
-    });
-
-    expect(result.isError).toBe(true);
-    expect(textOf(result)).toContain('has not enabled AI triage access');
-    expect(textOf(result)).toContain('Ask an Administrator');
-    expect(textOf(result)).not.toContain('Try again shortly');
-    expect(approvals.created).toEqual([]);
-    expect(withoutLookups(graphql.calls)).toEqual([]);
-  });
-
-  it('refuses, rather than posts blind, when the lookup fails for any other reason', async () => {
-    const { graphql, approvals } = api(() => posted(true), {
-      GetReportRef: () => {
-        throw new Error('socket hang up');
-      },
-    });
-    harness = await connectTools({
-      graphql,
-      grantedScopes: [...TRIAGER, 'triage:read'],
-      viewerId: 'triager-1',
-    });
-
-    const result = await harness.call('add_triage_comment', {
-      reportId: 'r1',
-      content: 'Test internal note',
-    });
-
-    expect(result.isError).toBe(true);
-    expect(textOf(result)).toContain('could not be read to check which side it is on');
-    expect(textOf(result)).toContain('Try again shortly');
-    expect(approvals.created).toEqual([]);
-    expect(withoutLookups(graphql.calls)).toEqual([]);
-  });
-
-  it('refuses a report the API answers null for, instead of asking the user to approve a doomed note', async () => {
-    const { graphql, approvals } = api(() => posted(true), { GetReportRef: () => ({ report: null }) });
-    harness = await connectTools({
-      graphql,
-      grantedScopes: [...TRIAGER, 'triage:read'],
-      viewerId: 'triager-1',
-    });
-
-    const result = await harness.call('add_triage_comment', {
-      reportId: 'r1',
-      content: 'Test internal note',
-    });
-
-    expect(result.isError).toBe(true);
-    expect(textOf(result)).toContain('not visible to your account');
-    expect(approvals.created).toEqual([]);
-    expect(withoutLookups(graphql.calls)).toEqual([]);
-  });
-
-  it('sends nothing when the lookup succeeded before asking but fails before sending', async () => {
-    // Same two passes as add_report_comment: an approval given on the first
-    // pass does not let the second pass post blind when its lookup fails.
-    let lookups = 0;
-    const { graphql, approvals } = api(() => posted(true), {
-      GetReportRef: () => {
-        lookups += 1;
-        if (lookups === 1) return { report: { id: 'r1', reporter: { id: 'researcher-1' } } };
-        throw new Error('socket hang up');
-      },
-    });
-    harness = await connectTools({
-      graphql,
-      grantedScopes: [...TRIAGER, 'triage:read'],
-      viewerId: 'triager-1',
-    });
-
-    const result = await harness.call('add_triage_comment', {
-      reportId: 'r1',
-      content: 'Test internal note',
-    });
-
-    expect(result.isError).toBe(true);
-    expect(textOf(result)).toContain('could not be read to check which side it is on');
-    expect(lookups).toBe(2);
-    expect(approvals.created).toHaveLength(1);
-    expect(harness.prompts).toHaveLength(1);
-    expect(withoutLookups(graphql.calls)).toEqual([]);
-  });
-
   it('refuses when it could post on either side and cannot read the report to tell which', async () => {
     const { graphql, approvals } = api(() => posted(true));
     harness = await connectTools({
@@ -256,7 +152,38 @@ describe('add_triage_comment', () => {
     expect(textOf(result)).toMatch(
       /^Nothing was sent: this connection can comment as a researcher and as an organisation/,
     );
+    expect(textOf(result)).toContain('Grant triage:read');
     expect(approvals.created).toEqual([]);
+    expect(withoutLookups(graphql.calls)).toEqual([]);
+  });
+
+  it('makes no lookup under the other side’s read scope, which shows none of the organisation’s reports', async () => {
+    // reports:read alone reads the user's own reports: the API answers every report of their
+    // organisations with a refusal, so a lookup under it could only refuse the note outright. The
+    // API checks whose report it is when the note is posted.
+    const { graphql } = api(() => posted(true));
+    harness = await connectTools({
+      graphql,
+      grantedScopes: [...TRIAGER, 'reports:read'],
+      viewerId: 'triager-1',
+    });
+    const result = await harness.call('add_triage_comment', { reportId: 'r1', content: 'hi' });
+    expect(result.isError).toBeFalsy();
+    expect(graphql.calls.map((c) => c.operation)).not.toContain('GetReportRef');
+  });
+
+  it('refuses, asking for triage:read, when it could post on either side and holds only reports:read', async () => {
+    const { graphql, approvals } = api(() => posted(true));
+    harness = await connectTools({
+      graphql,
+      grantedScopes: [...TRIAGER, 'reports:write', 'reports:read'],
+      viewerId: 'triager-1',
+    });
+    const result = await harness.call('add_triage_comment', { reportId: 'r1', content: 'hi' });
+    expect(result.isError).toBe(true);
+    expect(textOf(result)).toContain('Grant triage:read');
+    expect(approvals.created).toEqual([]);
+    expect(graphql.calls.map((c) => c.operation)).not.toContain('GetReportRef');
     expect(withoutLookups(graphql.calls)).toEqual([]);
   });
 });

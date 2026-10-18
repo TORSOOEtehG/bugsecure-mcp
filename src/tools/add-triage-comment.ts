@@ -29,8 +29,9 @@ export const addTriageComment = defineTool({
     'approves the exact text and audience on BugSecure first. Not for BugSecure staff accounts.',
   // profile:read: the account's roles are checked (BugSecure staff are refused).
   requiredScopes: ['triage:write', 'profile:read'],
-  // Reading the report checks it is an organisation's report, not the user's own.
-  optionalScopes: ['triage:read', 'reports:read'],
+  // Reading the report checks it is an organisation's report, not the user's own; only the
+  // organisation's read scope can show it (lookupReport).
+  optionalScopes: ['triage:read'],
   // Destructive: irreversible (a comment cannot be edited or deleted).
   annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: true },
   input: z.object({
@@ -46,11 +47,11 @@ export const addTriageComment = defineTool({
   output: z.object({ comment: PostedCommentSchema }),
   payload: async (input, context) => {
     await notStaff(context);
-    const { report } = await lookupReport(context, () =>
+    const { report } = await lookupReport(context, 'organization', () =>
       context.graphql.request(GetReportRefDocument, { id: input.reportId }, { signal: context.signal }),
     );
     // With reports:write too, the API would post on the user's own report as the researcher.
-    requireSideKnown(report, context.granted.has('reports:write'), 'this report');
+    requireSideKnown(report, context.granted.has('reports:write'), 'organization');
     if (report !== undefined) assertNotOwnReport(report.reporter.id, context.viewerId);
     return {
       action: input.visibleToResearcher

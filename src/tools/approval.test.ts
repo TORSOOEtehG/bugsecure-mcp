@@ -24,6 +24,7 @@ import {
   APPROVED_OPERATION,
   ORG_SIDE_WRITE_TOOLS,
   REPORT_CHANGING_ORG_TOOLS,
+  REPORT_READING_WRITE_TOOLS,
   SAMPLE_ARGS,
   WRITE_OPERATION,
 } from '../../test/helpers/sample-args.js';
@@ -222,8 +223,9 @@ describe('every write tool', () => {
   });
 
   // Report e6629484: a write that changes an organisation's report is never registered, asked for, or
-  // sent, when the report could not be read to check it is not the caller's own.
-  it.each([...REPORT_CHANGING_ORG_TOOLS])(
+  // sent, when the report could not be read to check it is not the caller's own. The same holds for a
+  // comment whose report is read (the token holds the side's read scope, as 'all' does here).
+  it.each([...REPORT_READING_WRITE_TOOLS])(
     '%s refuses, registering nothing, when the report cannot be read',
     async (name) => {
       const { graphql, approvals } = api('approve', {
@@ -241,7 +243,21 @@ describe('every write tool', () => {
     },
   );
 
-  it.each([...REPORT_CHANGING_ORG_TOOLS])(
+  it.each([...REPORT_READING_WRITE_TOOLS])(
+    '%s refuses a report the API answers null for, instead of asking the user to approve a doomed write',
+    async (name) => {
+      const { graphql, approvals } = api('approve', { GetReportRef: () => ({ report: null }) });
+      harness = await connectTools({ graphql, viewerId: viewerFor(name) });
+      const result = await harness.call(name, SAMPLE_ARGS[name] ?? {});
+      expect(result.isError).toBe(true);
+      expect(textOf(result)).toContain('not visible to your account');
+      expect(harness.prompts).toHaveLength(0);
+      expect(approvals.created).toEqual([]);
+      expect(writesIn(graphql)).toEqual([]);
+    },
+  );
+
+  it.each([...REPORT_READING_WRITE_TOOLS])(
     '%s sends nothing when the report can no longer be read once approved (the payload runs on both rounds)',
     async (name) => {
       let reads = 0;
@@ -276,23 +292,24 @@ describe('every write tool', () => {
     },
   );
 
-  it.each([...REPORT_CHANGING_ORG_TOOLS])(
+  it.each([...REPORT_READING_WRITE_TOOLS])(
     '%s passes on why the API refused to show the report',
     async (name) => {
       const { graphql, approvals } = api('approve', {
         GetReportRef: () => {
-          throw new BugSecureError(
-            'ORG_AI_ACCESS_DISABLED',
-            'This organization has not enabled AI triage access.',
-          );
+          throw new BugSecureError('SESSION_EXPIRED', 'Your session expired.', { hint: 'Run login again.' });
         },
       });
       harness = await connectTools({ graphql, viewerId: viewerFor(name) });
       const result = await harness.call(name, SAMPLE_ARGS[name] ?? {});
       expect(result.isError).toBe(true);
-      expect(textOf(result)).toContain('AI triage access');
+      // The user's to act on: it reaches them as it is, not as "try again shortly".
+      expect(textOf(result)).toContain('Your session expired.');
+      expect(textOf(result)).toContain('Run login again.');
+      expect(textOf(result)).not.toContain('Try again shortly');
       expect(harness.prompts).toHaveLength(0);
       expect(approvals.created).toEqual([]);
+      expect(writesIn(graphql)).toEqual([]);
     },
   );
 
